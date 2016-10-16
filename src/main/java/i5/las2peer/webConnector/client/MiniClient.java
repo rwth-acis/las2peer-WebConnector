@@ -1,24 +1,21 @@
 package i5.las2peer.webConnector.client;
 
+import i5.las2peer.webConnector.WebConnector;
+
 import java.io.BufferedReader;
 import java.io.DataOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.io.UnsupportedEncodingException;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.Base64;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.commons.codec.binary.Base64;
-
-import i5.las2peer.restMapper.data.Pair;
-import i5.las2peer.webConnector.WebConnector;
-
 /**
  * Very simple client to communicate with the las2peer web connector
- *
- *
+ * 
  */
 public class MiniClient {
 
@@ -43,11 +40,10 @@ public class MiniClient {
 	 * 
 	 * @param username
 	 * @param password
-	 * @throws UnsupportedEncodingException
 	 */
-	public void setLogin(String username, String password) throws UnsupportedEncodingException {
-		authorization = username + ":" + password;// Base64.encodeBytes((username+":"+password).getBytes("UTF-8"));
-		authorization = Base64.encodeBase64String(authorization.getBytes());
+	public void setLogin(String username, String password) {
+		authorization = username + ":" + password;
+		authorization = Base64.getEncoder().encodeToString(authorization.getBytes());
 	}
 
 	/**
@@ -63,13 +59,13 @@ public class MiniClient {
 	 * 
 	 */
 	public ClientResponse sendRequest(String method, String uri, String content, String contentType, String accept,
-			Pair<String>[] headers) {
+			Map<String, String> headers) {
 		String strContent = "[too big " + Integer.toString(content.length()) + " bytes]";
 		if (content.length() < WebConnector.DEFAULT_MAX_REQUEST_BODY_SIZE) {
 			strContent = content;
 		}
 		System.out.println("Request: " + method + " URI: " + uri + " Content: " + strContent + " Content-type: "
-				+ contentType + " accept: " + accept + " headers: " + headers.length);
+				+ contentType + " accept: " + accept + " headers: " + headers.size());
 		HttpURLConnection connection = null;
 		ClientResponse response;
 		try {
@@ -84,8 +80,8 @@ public class MiniClient {
 			connection.setRequestProperty("Accept", accept);
 			connection.setRequestProperty("Content-Length", Integer.toString(content.getBytes().length));
 
-			for (Pair<String> header : headers) {
-				connection.setRequestProperty(header.getOne(), header.getTwo());
+			for (Map.Entry<String, String> header : headers.entrySet()) {
+				connection.setRequestProperty(header.getKey(), header.getValue());
 			}
 
 			connection.setUseCaches(false);
@@ -167,7 +163,7 @@ public class MiniClient {
 	 * @return returns server response
 	 * 
 	 */
-	public ClientResponse sendRequest(String method, String uri, String content, Pair<String>[] headers) {
+	public ClientResponse sendRequest(String method, String uri, String content, Map<String, String> headers) {
 		return sendRequest(method, uri, content, "text/plain", "*/*", headers);
 	}
 
@@ -180,9 +176,8 @@ public class MiniClient {
 	 * @return returns server response
 	 * 
 	 */
-	@SuppressWarnings("unchecked")
 	public ClientResponse sendRequest(String method, String uri, String content) {
-		return sendRequest(method, uri, content, new Pair[] {});
+		return sendRequest(method, uri, content, new HashMap<String, String>());
 	}
 
 }
