@@ -1,5 +1,25 @@
 package i5.las2peer.webConnector;
 
+import i5.las2peer.execution.ServiceInvocationException;
+import i5.las2peer.p2p.AgentAlreadyRegisteredException;
+import i5.las2peer.p2p.AgentNotKnownException;
+import i5.las2peer.p2p.AliasNotFoundException;
+import i5.las2peer.p2p.Node;
+import i5.las2peer.p2p.ServiceAliasManager.AliasResolveResponse;
+import i5.las2peer.p2p.ServiceNameVersion;
+import i5.las2peer.p2p.ServiceVersion;
+import i5.las2peer.p2p.TimeoutException;
+import i5.las2peer.restMapper.RESTResponse;
+import i5.las2peer.security.L2pSecurityException;
+import i5.las2peer.security.Mediator;
+import i5.las2peer.security.PassphraseAgent;
+import i5.las2peer.security.UserAgent;
+import io.swagger.models.Operation;
+import io.swagger.models.Path;
+import io.swagger.models.Swagger;
+import io.swagger.models.auth.OAuth2Definition;
+import io.swagger.util.Json;
+
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -22,6 +42,8 @@ import java.util.Map.Entry;
 
 import javax.ws.rs.core.UriBuilder;
 
+import net.minidev.json.JSONObject;
+
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.nimbusds.oauth2.sdk.ErrorObject;
 import com.nimbusds.oauth2.sdk.ParseException;
@@ -36,26 +58,6 @@ import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpsExchange;
-
-import i5.las2peer.execution.ServiceInvocationException;
-import i5.las2peer.p2p.AgentAlreadyRegisteredException;
-import i5.las2peer.p2p.AgentNotKnownException;
-import i5.las2peer.p2p.AliasNotFoundException;
-import i5.las2peer.p2p.Node;
-import i5.las2peer.p2p.ServiceNameVersion;
-import i5.las2peer.p2p.ServiceVersion;
-import i5.las2peer.p2p.TimeoutException;
-import i5.las2peer.restMapper.RESTResponse;
-import i5.las2peer.security.L2pSecurityException;
-import i5.las2peer.security.Mediator;
-import i5.las2peer.security.PassphraseAgent;
-import i5.las2peer.security.UserAgent;
-import io.swagger.models.Operation;
-import io.swagger.models.Path;
-import io.swagger.models.Swagger;
-import io.swagger.models.auth.OAuth2Definition;
-import io.swagger.util.Json;
-import net.minidev.json.JSONObject;
 
 /**
  * A HttpServer RequestHandler for handling requests to the las2peer Web Connector. Each request will be distributed to
@@ -88,9 +90,14 @@ public class WebConnectorRequestHandler implements HttpHandler {
 		exchange.getResponseHeaders().set("Server-Name", "las2peer WebConnector");
 
 		try {
-			PassphraseAgent userAgent;
-			if ((userAgent = authenticate(exchange)) != null) {
-				invoke(userAgent, exchange);
+			// TODO workaround (should be removed, options request should be handled as any other request)
+			if (exchange.getRequestMethod().equalsIgnoreCase("options")) {
+				sendResponseHeaders(exchange, HttpURLConnection.HTTP_OK, NO_RESPONSE_BODY);
+			} else {
+				PassphraseAgent userAgent;
+				if ((userAgent = authenticate(exchange)) != null) {
+					invoke(userAgent, exchange);
+				}
 			}
 		} catch (Exception e) {
 			sendUnexpectedErrorResponse(exchange, e.toString(), e);
@@ -105,10 +112,11 @@ public class WebConnectorRequestHandler implements HttpHandler {
 				&& exchange.getRequestHeaders().getFirst(AUTHENTICATION_FIELD).toLowerCase().startsWith("basic ")) {
 			// basic authentication
 			return authenticateBasic(exchange);
-		} else if (connector.oidcProviderInfos != null && ((exchange.getRequestURI().getRawQuery() != null
-				&& exchange.getRequestURI().getRawQuery().contains(ACCESS_TOKEN_KEY + "="))
-				|| exchange.getRequestHeaders().containsKey(ACCESS_TOKEN_KEY)
-				|| (exchange.getRequestHeaders().containsKey(AUTHENTICATION_FIELD) && exchange.getRequestHeaders()
+		} else if (connector.oidcProviderInfos != null
+				&& ((exchange.getRequestURI().getRawQuery() != null && exchange.getRequestURI().getRawQuery()
+						.contains(ACCESS_TOKEN_KEY + "="))
+						|| exchange.getRequestHeaders().containsKey(ACCESS_TOKEN_KEY) || (exchange.getRequestHeaders()
+						.containsKey(AUTHENTICATION_FIELD) && exchange.getRequestHeaders()
 						.getFirst(AUTHENTICATION_FIELD).toLowerCase().startsWith("bearer ")))) {
 			// openid connect
 			return authenticateOIDC(exchange);
@@ -292,8 +300,8 @@ public class WebConnectorRequestHandler implements HttpHandler {
 		} catch (AgentNotKnownException e) {
 			sendUnauthorizedResponse(exchange, null, exchange.getRemoteAddress() + ": user " + username + " not found");
 		} catch (L2pSecurityException e) {
-			sendUnauthorizedResponse(exchange, null,
-					exchange.getRemoteAddress() + ": passphrase invalid for user " + username);
+			sendUnauthorizedResponse(exchange, null, exchange.getRemoteAddress() + ": passphrase invalid for user "
+					+ username);
 		} catch (Exception e) {
 			sendUnauthorizedResponse(exchange, null, exchange.getRemoteAddress()
 					+ ": something went horribly wrong. Check your request for correctness.");
@@ -314,30 +322,37 @@ public class WebConnectorRequestHandler implements HttpHandler {
 	}
 
 	private boolean invoke(PassphraseAgent agent, HttpExchange exchange) {
-		// extract service information from uri
 		String requestPath = exchange.getRequestURI().getPath();
+
+		// welcome page
 		if (requestPath.equalsIgnoreCase("/")) {
 			sendStringResponse(exchange, HttpURLConnection.HTTP_OK, "Welcome to las2peer!");
 			return true;
 		}
-		String[] pathSplit = requestPath.split("/");
+
+		// split path
+		ArrayList<String> pathSplit = new ArrayList<String>(Arrays.asList(requestPath.split("/")));
+		pathSplit.removeIf(item -> item == null || "".equals(item));
 
 		// resolve service name
 		String serviceName;
+		int serviceAliasLength;
 		try {
-			serviceName = l2pNode.getServiceAliasManager().getServiceNameByAlias(pathSplit[1]);
+			AliasResolveResponse response = l2pNode.getServiceAliasManager().resolvePathToServiceName(requestPath);
+			serviceName = response.getServiceName();
+			serviceAliasLength = response.getNumMatchedParts();
 		} catch (AliasNotFoundException e1) {
-			sendStringResponse(exchange, HttpURLConnection.HTTP_NOT_FOUND,
-					"Service alias " + pathSplit[1] + " is not known.");
+			sendStringResponse(exchange, HttpURLConnection.HTTP_NOT_FOUND, "Could not resolve " + requestPath
+					+ " to a service name.");
 			return false;
 		}
 
 		// get service version
 		ServiceVersion serviceVersion;
 		boolean versionSpecified = false;
-		if (pathSplit.length > 2) {
+		if (pathSplit.size() > serviceAliasLength && pathSplit.get(serviceAliasLength).startsWith("v")) {
 			try {
-				serviceVersion = new ServiceVersion(pathSplit[2].substring(1));
+				serviceVersion = new ServiceVersion(pathSplit.get(serviceAliasLength).substring(1));
 				versionSpecified = true;
 			} catch (IllegalArgumentException e) {
 				serviceVersion = new ServiceVersion("*");
@@ -350,9 +365,12 @@ public class WebConnectorRequestHandler implements HttpHandler {
 		ServiceNameVersion requiredService = new ServiceNameVersion(serviceName, serviceVersion);
 
 		// construct base path
-		String basePath = "/" + pathSplit[1] + "/";
+		String basePath = "/";
+		for (int i = 0; i < serviceAliasLength; i++) {
+			basePath += pathSplit.get(i) + "/";
+		}
 		if (versionSpecified) {
-			basePath += pathSplit[2] + "/";
+			basePath += pathSplit.get(serviceAliasLength) + "/";
 		}
 
 		// create mediator
@@ -561,8 +579,7 @@ public class WebConnectorRequestHandler implements HttpHandler {
 		try {
 			result = mediator.invoke(service.toString(), method, params, connector.onlyLocalServices());
 		} catch (AgentNotKnownException | TimeoutException e) {
-			sendStringResponse(exchange, HttpURLConnection.HTTP_NOT_FOUND,
-					"No service found matching " + service + ".");
+			sendStringResponse(exchange, HttpURLConnection.HTTP_NOT_FOUND, "No service found matching " + service + ".");
 		} catch (ServiceInvocationException e) {
 			sendInvocationException(exchange, e);
 		} catch (Exception e) {
@@ -591,12 +608,14 @@ public class WebConnectorRequestHandler implements HttpHandler {
 	private void sendRESTResponse(HttpExchange exchange, RESTResponse result) {
 		exchange.getResponseHeaders().putAll(result.getHeaders());
 		try {
-			sendResponse(exchange, result.getHttpCode(), getResponseLength(result.getBody().length));
+			sendResponseHeaders(exchange, result.getHttpCode(), getResponseLength(result.getBody().length));
 			OutputStream os = exchange.getResponseBody();
-			os.write(result.getBody());
+			if (result.getBody().length > 0) {
+				os.write(result.getBody());
+			}
 			os.close();
 		} catch (IOException e) {
-			connector.logMessage(e.getMessage());
+			connector.logError("Sending REST response (Code: " + result.getHttpCode() + ") failed!", e);
 		}
 	}
 
@@ -607,7 +626,7 @@ public class WebConnectorRequestHandler implements HttpHandler {
 			sendStringResponse(exchange, HttpURLConnection.HTTP_UNAUTHORIZED, answerMessage);
 		} else {
 			try {
-				sendResponse(exchange, HttpURLConnection.HTTP_UNAUTHORIZED, NO_RESPONSE_BODY);
+				sendResponseHeaders(exchange, HttpURLConnection.HTTP_UNAUTHORIZED, NO_RESPONSE_BODY);
 				// otherwise the client waits till the timeout for an answer
 				exchange.getResponseBody().close();
 			} catch (IOException e) {
@@ -625,7 +644,7 @@ public class WebConnectorRequestHandler implements HttpHandler {
 		byte[] content = response.getBytes();
 		exchange.getResponseHeaders().set("content-type", "text/plain");
 		try {
-			sendResponse(exchange, responseCode, content.length);
+			sendResponseHeaders(exchange, responseCode, content.length);
 			OutputStream os = exchange.getResponseBody();
 			os.write(content);
 			os.close();
@@ -634,7 +653,7 @@ public class WebConnectorRequestHandler implements HttpHandler {
 		}
 	}
 
-	private void sendResponse(HttpExchange exchange, int responseCode, long contentLength) throws IOException {
+	private void sendResponseHeaders(HttpExchange exchange, int responseCode, long contentLength) throws IOException {
 		// add configured headers
 		Headers responseHeaders = exchange.getResponseHeaders();
 		if (connector.enableCrossOriginResourceSharing) {
