@@ -3,4 +3,4 @@ las2peer-WebConnector
 =====================
 
 A HTTP/HTTPS connector for las2peer that enables communication with a las2peer network in a RESTful way.
-This repository is legacy, further developmend is done at [las2peer main project](https://github.com/rwth-acis/las2peer)  repository.
+This repository is legacy, further developmend is done at the [las2peer main project](https://github.com/rwth-acis/las2peer)  repository.
